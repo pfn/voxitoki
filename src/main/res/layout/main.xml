@@ -12,8 +12,10 @@
     <TextView
             android:id="@+id/empty"
             android:visibility="gone"
-            android:text="No voxitokies found"
+            android:text="Searching for voxitokies..."
+            android:layout_gravity="center"
+            android:textAppearance="?android:attr/textAppearanceLarge"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"/>
+            android:layout_height="match_parent"/>
 </LinearLayout>
 
