@@ -21,12 +21,12 @@ import android.net.wifi.WifiManager
 
 import scala.concurrent.Future
 import scala.concurrent.future
-import scala.concurrent.ExecutionContext.Implicits.global
 
 /**
  * @author pfnguyen
  */
 object MainActivity {
+  implicit val TAG = LogcatTag("Voxitoki")
   lazy val (soundpool,_chirp, _over) = {
     val pool = new SoundPool(2, AudioManager.STREAM_VOICE_CALL, 0)
     (pool, pool.load(instance, R.raw.chirp, 1), pool.load(instance, R.raw.over, 1))
@@ -42,7 +42,7 @@ object MainActivity {
 }
 class MainActivity extends Activity with EventBus.RefOwner
 with TypedViewHolder {
-  implicit val TAG = LogcatTag("Voxitoki")
+  import MainActivity._
   lazy val list = findView(TR.list)
 
   UiBus += {
@@ -187,10 +187,6 @@ with TypedViewHolder with EventBus.RefOwner {
                     response map { r =>
                       d("Successful response: " + r)
                       r.port map { port =>
-                        MainActivity.chirp()
-                        stream.associate(service.addr, port)
-                        stream.join(group)
-                        audio.setMode(AudioManager.MODE_IN_COMMUNICATION)
                         val plugged = registerReceiver(
                           null, Intent.ACTION_HEADSET_PLUG)
                         val headset = Option(plugged) exists {
@@ -198,6 +194,10 @@ with TypedViewHolder with EventBus.RefOwner {
                         }
                         if (!headset)
                           audio.setSpeakerphoneOn(true)
+                        MainActivity.chirp()
+                        stream.associate(service.addr, port)
+                        stream.join(group)
+                        audio.setMode(AudioManager.MODE_IN_COMMUNICATION)
                         id = r.id.get
                       }
                     } getOrElse {
@@ -238,13 +238,14 @@ with TypedViewHolder with EventBus.RefOwner {
   def destroy() {
     fut map { _ map { _ =>
       d("Destroying session")
-      stream.join(null)
-      stream.release()
       SessionControl.sendMessage[SessionRequest,SessionResponse](
         SessionRequest(DiscoveryService.instance.get.service.getName,
           id = Some(id)), service.addr, service.port)
+      stream.join(null)
+      stream.release()
       group.clear()
       audio.setMode(AudioManager.MODE_NORMAL)
+      audio.setSpeakerphoneOn(false)
       fut = None
     }}
   }
@@ -255,7 +256,9 @@ with TypedViewHolder with EventBus.RefOwner {
   }
   UiBus += {
     case TalkStarted(t) =>
-      destroy()
-      finish()
+      if (t != service) {
+        destroy()
+        finish()
+      }
   }
 }

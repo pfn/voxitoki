@@ -13,7 +13,6 @@ import android.bluetooth.BluetoothAdapter
 import android.provider.ContactsContract
 import java.io._
 import scala.concurrent.{Promise, Future, future}
-import scala.concurrent.ExecutionContext.Implicits.global
 
 import argonaut.Argonaut._
 import javax.jmdns.{ServiceEvent, ServiceListener, JmDNS, ServiceInfo}
@@ -132,9 +131,6 @@ class DiscoveryService extends Service {
                   val stream = new AudioStream(addr)
                   stream.setCodec(AudioCodec.PCMU)
                   stream.setMode(RtpStream.MODE_RECEIVE_ONLY)
-                  MainActivity.chirp()
-                  stream.associate(remote, port)
-                  stream.join(group)
                   val plugged = registerReceiver(
                     null, Intent.ACTION_HEADSET_PLUG)
                   val headset = Option(plugged) exists {
@@ -143,7 +139,9 @@ class DiscoveryService extends Service {
                   audio.setMode(AudioManager.MODE_IN_COMMUNICATION)
                   if (!headset)
                     audio.setSpeakerphoneOn(true)
-                  d("Headset plugged: " + headset)
+                  MainActivity.chirp()
+                  stream.associate(remote, port)
+                  stream.join(group)
                   val id = UUID.randomUUID.toString
                   sessions = sessions + (id -> stream)
 
@@ -165,6 +163,7 @@ class DiscoveryService extends Service {
                     if (group != null) {
                       if (group.getStreams.size == 0) {
                         audio.setMode(AudioManager.MODE_NORMAL)
+                        audio.setSpeakerphoneOn(false)
                         group.clear()
                       }
                     }
@@ -221,7 +220,7 @@ class DiscoveryService extends Service {
       .build
 
     startForeground(1, n)
-    Service.START_STICKY
+    Service.START_NOT_STICKY
   }
 
   object Receiver extends BroadcastReceiver {
