@@ -16,7 +16,7 @@ import android.view.View.OnTouchListener
 import android.media.{SoundPool, AudioManager}
 import android.net.rtp.{RtpStream, AudioCodec, AudioStream, AudioGroup}
 import android.text.format.Formatter
-import java.net.{Socket, InetSocketAddress, InetAddress}
+import java.net.InetAddress
 import android.net.wifi.WifiManager
 
 import scala.concurrent.Future
@@ -27,18 +27,6 @@ import scala.concurrent.future
  */
 object MainActivity {
   implicit val TAG = LogcatTag("Voxitoki")
-  lazy val (soundpool,_chirp, _over) = {
-    val pool = new SoundPool(2, AudioManager.STREAM_VOICE_CALL, 0)
-    (pool, pool.load(instance, R.raw.chirp, 1), pool.load(instance, R.raw.over, 1))
-  }
-  private var instance: MainActivity = _
-
-  def chirp() {
-    soundpool.play(_chirp, 1.0f, 1.0f, 1, 0, 1.0f)
-  }
-  def over() {
-    soundpool.play(_over, 1.0f, 1.0f, 1, 0, 1.0f)
-  }
 }
 class MainActivity extends Activity with EventBus.RefOwner
 with TypedViewHolder {
@@ -54,8 +42,6 @@ with TypedViewHolder {
 
   override def onCreate(savedInstanceState: Bundle) {
     super.onCreate(savedInstanceState)
-    MainActivity.instance = this
-    MainActivity.soundpool
     setContentView(R.layout.main)
     list.setAdapter(Adapter)
     list.setEmptyView(findViewById(R.id.empty))
@@ -71,7 +57,6 @@ with TypedViewHolder {
 
   override def onDestroy() {
     super.onDestroy()
-    MainActivity.instance = null
     d("onDestroy")
   }
 
@@ -144,11 +129,9 @@ with TypedViewHolder with EventBus.RefOwner {
     TalkActivity.service = None
   }
 
-  import RtpManager.group
   var stream: AudioStream = _
   var fut: Option[Future[Any]] = None
   var id: String = _
-  lazy val audio = TalkActivity.this.systemService[AudioManager]
 
   override def onTouchEvent(event: MotionEvent) = {
     if (event.getAction == MotionEvent.ACTION_OUTSIDE)
@@ -187,17 +170,9 @@ with TypedViewHolder with EventBus.RefOwner {
                     response map { r =>
                       d("Successful response: " + r)
                       r.port map { port =>
-                        val plugged = registerReceiver(
-                          null, Intent.ACTION_HEADSET_PLUG)
-                        val headset = Option(plugged) exists {
-                          _.getIntExtra("state", 0) != 0
-                        }
-                        if (!headset)
-                          audio.setSpeakerphoneOn(true)
-                        MainActivity.chirp()
                         stream.associate(service.addr, port)
-                        stream.join(group)
-                        audio.setMode(AudioManager.MODE_IN_COMMUNICATION)
+                        RtpManager.add(stream)
+                        Voxitoki.chirp()
                         id = r.id.get
                       }
                     } getOrElse {
@@ -241,11 +216,7 @@ with TypedViewHolder with EventBus.RefOwner {
       SessionControl.sendMessage[SessionRequest,SessionResponse](
         SessionRequest(DiscoveryService.instance.get.service.getName,
           id = Some(id)), service.addr, service.port)
-      stream.join(null)
-      stream.release()
-      group.clear()
-      audio.setMode(AudioManager.MODE_NORMAL)
-      audio.setSpeakerphoneOn(false)
+      RtpManager.remove(stream)
       fut = None
     }}
   }

@@ -20,7 +20,6 @@ import argonaut.{DecodeJson, EncodeJson}
 import android.net.rtp.{RtpStream, AudioCodec, AudioStream, AudioGroup}
 import android.media.AudioManager
 import java.util.UUID
-import scala.ref.WeakReference
 
 /**
  * @author pfnguyen
@@ -66,7 +65,6 @@ class DiscoveryService extends Service {
   import DiscoveryService._
   import MessageCodecs._
 
-  import RtpManager.group
   private var sessions = Map.empty[String,AudioStream]
 
   lazy val wm = this.systemService[WifiManager]
@@ -84,8 +82,7 @@ class DiscoveryService extends Service {
     val svcname = {
       val c = getContentResolver.query(ContactsContract.Profile.CONTENT_URI,
         Array("display_name"), null, null, null)
-      c.moveToNext()
-      val name = c.getString(0)
+      val name = if (c.moveToNext()) c.getString(0) else "Unknown"
       c.close()
       name + " @ " + BluetoothAdapter.getDefaultAdapter.getName
     }
@@ -97,7 +94,6 @@ class DiscoveryService extends Service {
   def onBind(intent: Intent) = null
 
   private var stopped = false
-  lazy val audio = this.systemService[AudioManager]
 
   override def onCreate() {
     super.onCreate()
@@ -105,11 +101,15 @@ class DiscoveryService extends Service {
     d("Creating service")
     d("Listening on: " + socket.getLocalPort)
     _services = Map.empty
+    jmdns onFailure {
+      case ex: Exception => e("Unable to start jmdns", ex)
+    }
     jmdns map { dns =>
+      d("jmdns ready")
       dns.registerService(service)
       d("registered as: " + service.getName)
       dns.addServiceListener(svctype, JmdnsListener)
-    }
+    } onFailure { case ex: Exception => e("registering service failed", ex) }
 
     async {
       d("Launching async accept loop")
@@ -127,21 +127,12 @@ class DiscoveryService extends Service {
               val remote = sock.getInetAddress
               (r.ip,r.port,r.id) match {
                 case (Some(ip),Some(port),_) =>
-                  audio.setMode(AudioManager.MODE_IN_COMMUNICATION)
                   val stream = new AudioStream(addr)
                   stream.setCodec(AudioCodec.PCMU)
                   stream.setMode(RtpStream.MODE_RECEIVE_ONLY)
-                  val plugged = registerReceiver(
-                    null, Intent.ACTION_HEADSET_PLUG)
-                  val headset = Option(plugged) exists {
-                    _.getIntExtra("state", 0) != 0
-                  }
-                  audio.setMode(AudioManager.MODE_IN_COMMUNICATION)
-                  if (!headset)
-                    audio.setSpeakerphoneOn(true)
-                  MainActivity.chirp()
                   stream.associate(remote, port)
-                  stream.join(group)
+                  RtpManager.add(stream)
+                  Voxitoki.chirp()
                   val id = UUID.randomUUID.toString
                   sessions = sessions + (id -> stream)
 
@@ -157,16 +148,8 @@ class DiscoveryService extends Service {
                     Some(id))
                 case (_,_,Some(id)) =>
                   sessions.get(id) map { stream =>
-                    MainActivity.over()
-                    stream.join(null)
-                    stream.release()
-                    if (group != null) {
-                      if (group.getStreams.size == 0) {
-                        audio.setMode(AudioManager.MODE_NORMAL)
-                        audio.setSpeakerphoneOn(false)
-                        group.clear()
-                      }
-                    }
+                    Voxitoki.over()
+                    RtpManager.remove(stream)
                   }
                   sessions = sessions - id
                   SessionResponse(service.getName)
@@ -358,19 +341,64 @@ object SessionControl {
 }
 
 object RtpManager {
-  private var groupRef: WeakReference[AudioGroup] = _
+  lazy val audio = Voxitoki.instance.get.systemService[AudioManager]
 
-  private def initGroup() = {
-    val g = new AudioGroup
-    g.setMode(AudioGroup.MODE_NORMAL)
-    groupRef = WeakReference(g)
-    g
+  implicit val TAG = LogcatTag("RtpManager")
+  private def group = {
+    if (_group == null) {
+      _group = new AudioGroup
+      _group.setMode(AudioGroup.MODE_NORMAL)
+    }
+    _group
   }
 
-  def group = {
-    if (groupRef == null) {
-      initGroup()
+  private var count = 0
+  private var _group: AudioGroup = _
+
+  private var originalMode = 0
+  private var originalSpeaker = false
+
+  def add(stream: AudioStream) {
+    if (count == 0) {
+      originalMode = audio.getMode
+      originalSpeaker = audio.isSpeakerphoneOn
+      audio.requestAudioFocus(FocusListener, AudioManager.STREAM_VOICE_CALL,
+        AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+      audio.setMode(AudioManager.MODE_IN_COMMUNICATION)
+      val plugged = Voxitoki.instance.get.registerReceiver(
+        null, Intent.ACTION_HEADSET_PLUG)
+      val headset = Option(plugged) exists {
+        _.getIntExtra("state", 0) != 0
+      }
+      if (!headset)
+        audio.setSpeakerphoneOn(true)
+
     }
-    groupRef.get getOrElse initGroup()
+    count += 1
+    UiBus.post { stream.join(group) }
+  }
+
+  def remove(stream: AudioStream) {
+    count -= 1
+
+    d("count: " + count)
+    if (count < 0) count = 0
+    if (count == 0) {
+      audio.setMode(originalMode)
+      audio.setSpeakerphoneOn(originalSpeaker)
+      audio.abandonAudioFocus(FocusListener)
+      UiBus.post {
+        if (_group != null)
+          _group.clear()
+        _group = null
+        stream.join(null)
+        stream.release()
+      }
+    }
+  }
+
+  object FocusListener extends AudioManager.OnAudioFocusChangeListener {
+    def onAudioFocusChange(change: Int) {
+    }
   }
 }
